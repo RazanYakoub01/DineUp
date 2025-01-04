@@ -178,25 +178,53 @@ def fetch_independent_data(user_id):
         return None
 
 
-def get_ideal_intake_from_openai(user_id):
-    prompt = f"Provide the ideal daily nutrient intake (calories, proteins, carbs, and fats) for a user with ID {user_id} based on age, gender and weight."
+def get_ideal_intake_from_openai(user_info):
     
+    name = user_info.get("name", "User")
+    gender = user_info.get("gender", "Unknown")
+    age = user_info.get("age", "Unknown")
+    weight = user_info.get("weight", "Unknown")
+
+
+    prompt = (
+        f"Provide the ideal daily nutrient intake (calories, proteins, carbs, and fats) for the user with the name {name}"        
+        f"Based on the user's age: {age}, gender: {gender}, and weight: {weight}."
+        f"Provide it as a list with no extra text or explanations"
+        f"Provide one value for each , i.e no ranges"
+    )
+
     try:
-        response = openai.Completion.create(
+        ideal_values_response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=800,
             temperature=0.7
         )
+        ideal_values_str = ideal_values_response['choices'][0]['message']['content'].strip()
 
-        ideal_values = response.choices[0].text.strip().split('\n')
         ideal_intake = {}
-        
-        for value in ideal_values:
-            nutrient, amount = value.split(":")
-            ideal_intake[nutrient.strip()] = float(amount.strip())
 
+        for line in ideal_values_str.split('\n'):
+            if not line.strip():
+                continue
+                
+            nutrient, amount = line.split(":")
+            clean_nutrient = nutrient.strip().lstrip("-").lower()  
+            clean_amount = amount.strip().replace('g', '').strip()
+
+            clean_amount = clean_amount.replace(',', '')
+
+            try:
+                ideal_intake[clean_nutrient] = float(clean_amount)
+            except ValueError as e:
+                logging.error(f"Error converting amount '{clean_amount}' for nutrient '{clean_nutrient}': {e}")
+
+        ideal_intake = {key.strip(): value for key, value in ideal_intake.items()}
+
+        logging.debug(f"Ideal Intake: {ideal_intake}")
         return ideal_intake
+
+
     except Exception as e:
         print(f"Error fetching data from OpenAI: {e}")
         return {}
@@ -212,6 +240,8 @@ def generate_health_report_with_openai_v2(user_info):
     age = user_info.get("age", "Unknown")
     weight = user_info.get("weight", "Unknown")
     health_data = user_info.get("health_data", {})
+
+    user = user_info
 
     health_summary = "\n".join(
         [f"{date}: Calories: {data.get('calories', 0)}, Proteins: {data.get('proteins', 0)}g, "
@@ -256,7 +286,7 @@ def generate_health_report_with_openai_v2(user_info):
         daily_report = daily_response['choices'][0]['message']['content'].strip()
 
         # Generate a visual graph comparing intake to ideal values
-        ideal_intake = get_ideal_intake_from_openai(st.session_state.user['localId'])
+        ideal_intake = get_ideal_intake_from_openai(user)
         today_data = health_data.get(datetime.now().strftime('%Y-%m-%d'), {})
         actual_intake = {
             "calories": today_data.get('calories', 0),
@@ -266,8 +296,14 @@ def generate_health_report_with_openai_v2(user_info):
         }
 
         labels = ['Calories', 'Proteins', 'Carbs', 'Fats']
-        ideal_values = [ideal_intake[label.lower()] for label in labels]
-        actual_values = [actual_intake[label.lower()] for label in labels]
+
+        ideal_values = [ideal_intake.get(label.lower().strip(), 0) for label in labels]
+
+        logging.debug(f"Ideal Values: {ideal_values}")
+
+        actual_values = [actual_intake.get(label.lower().strip(), 0) for label in labels]
+
+        logging.debug(f"Actual Values: {actual_values}")
 
         plt.figure(figsize=(8, 6))
         x = range(len(labels))
