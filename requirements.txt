@@ -1,0 +1,7 @@
+streamlit
+pyrebase4
+openai==0.27.8
+pandas
+matplotlib
+setuptools
+python-dotenv
