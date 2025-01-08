@@ -117,14 +117,14 @@ def parse_recipe_recommendations(response):
     return recipes
 
 
-def generate_recipe_recommendations(mood, ingredients, dietary_goals, data):
+def generate_recipe_recommendations(mood, ingredients, dietary_goals, data, daily_intakes):
     """
     Generate recipe recommendations using OpenAI's chat models.
     """
 
     prompt = (
         f"Based on the mood '{mood}' and the following ingredients: {', '.join(ingredients)}, and the dietary goals of the user '{dietary_goals}'"
-        f"and on the user´s liked recioes'{data}' "
+        f"and on the user´s liked recioes'{data}' and previous daily intakes of nutritional '{daily_intakes}'"
         f"provide three recipes: one for breakfast recipe, one for lunch recipe, and one for dinner recipe. "
         f"Each recipe should include a name, a list of ingredients, and step-by-step instructions."
         f"Each recipe should include nutritional information (calories, proteins, carbs, and fats)"
@@ -154,6 +154,25 @@ def save_daily_intake(user_id, date, intake_data):
     except Exception as e:
         logging.error(f"Error saving daily intake: {e}")
         st.error("Unable to save daily intake. Please try again later.")
+
+
+def fetch_daily_intake(user_id):
+    """
+    Fetches all saved daily intake data for a specific user.
+
+    :param user_id: The unique identifier of the user.
+    :return: A dictionary of daily intake data with dates as keys.
+    """
+    try:
+        intake_data = database.child("users").child(user_id).child("health_intake").get()
+
+        if intake_data.val() is not None:
+            return intake_data.val()
+        else:
+            return {}
+    except Exception as e:
+        logging.error(f"Error fetching daily intake data: {e}")
+        return {}
 
 
 def fetch_independent_data(user_id):
@@ -448,8 +467,9 @@ def main():
                     st.warning("Please fill out all fields.")
                 else: 
                     data = fetch_user_preferences(st.session_state.user['localId'])
+                    daily_intakes = fetch_daily_intake(st.session_state.user['localId'])
                     ingredients_list = [item.strip() for item in ingredients.split(",")]
-                    st.session_state.recommendations = generate_recipe_recommendations(mood, ingredients_list, dietary_goals, data)
+                    st.session_state.recommendations = generate_recipe_recommendations(mood, ingredients_list, dietary_goals, data, daily_intakes)
                     if st.session_state.recommendations:
                         logging.debug(st.session_state.recommendations)
 
@@ -490,6 +510,21 @@ def main():
                         "fats": fats
                     }
                     save_daily_intake(st.session_state.user['localId'], date, intake_data)
+            
+            user_id = st.session_state.user['localId'] 
+            daily_intakes = fetch_daily_intake(user_id)
+
+            if daily_intakes:
+                st.write("Your saved daily intakes:")
+                for date, intake in daily_intakes.items():
+                    st.write(f"**Date:** {date}")
+                    st.write(f"- Calories: {intake['calories']} kcal")
+                    st.write(f"- Proteins: {intake['proteins']} g")
+                    st.write(f"- Carbs: {intake['carbs']} g")
+                    st.write(f"- Fats: {intake['fats']} g")
+            else:
+                st.write("No daily intake data found.")
+
 
         elif st.session_state.current_page == "Health Insights":
             st.subheader("Health Insights")
