@@ -11,6 +11,8 @@ import os
 import zipfile
 import io
 from dotenv import load_dotenv
+import ast
+
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -65,136 +67,39 @@ if "user_id" not in st.session_state:
 if "last_refresh_time" not in st.session_state:
     st.session_state.last_refresh_time = None
 
-# Helper Functions
 
-def fetch_user_preferences(user_uid):
-    try:
-        preferences = database.child("users").child(user_uid).child("preferences").get().val()
-        liked_ingredients = preferences.get("liked_ingredients", []) if preferences else []
-        disliked_ingredients = preferences.get("disliked_ingredients", []) if preferences else []
-        liked_recipes = preferences.get("liked_recipes", []) if preferences else []
-        return liked_ingredients, disliked_ingredients, liked_recipes
-    except Exception as e:
-        st.error(f"Failed to fetch user preferences: {e}")
-        return [], [], []
-
-
-def add_to_favorites(user_id, recipe_title):
-    try:
-        preferences = database.child("users").child(user_id).child("preferences").get().val() or {}
-        liked_recipes = preferences.get("liked_recipes", [])
-
-        if recipe_title not in liked_recipes:
-            liked_recipes.append(recipe_title)
-            database.child("users").child(user_id).child("preferences").update({"liked_recipes": liked_recipes})
-            st.success(f"Added '{recipe_title}' to favorites!")
-        else:
-            st.info(f"'{recipe_title}' is already in favorites.")
-    except Exception as e:
-        logging.error(f"Error adding to favorites: {e}")
-        st.error("Failed to add recipe to favorites.")
-
-
-def parse_recipe_recommendations(response):
-    """
-    Parse the response from OpenAI to extract recipe details, including ingredients, instructions, and nutritional information.
-    """
-
-    recipes = []
-    current_recipe = ""   
-    for line in response.split("\n"):
-        if "Recipe:" in line:
-            if current_recipe:
-                recipes.append(current_recipe.strip())
-            current_recipe = line.strip() + "\n" 
-        else:
-            current_recipe += line.strip() + "\n"  
-
-    if current_recipe:  
-        recipes.append(current_recipe.strip())
-
-    logging.debug(recipes)
-    return recipes
-
+# AI Functions
 
 def generate_recipe_recommendations(mood, ingredients, dietary_goals, data, daily_intakes):
-    """
-    Generate recipe recommendations using OpenAI's chat models.
-    """
-
     prompt = (
-        f"Based on the mood '{mood}' and the following ingredients: {', '.join(ingredients)}, and the dietary goals of the user '{dietary_goals}'"
-        f"and on the user´s liked recioes'{data}' and previous daily intakes of nutritional '{daily_intakes}'"
-        f"provide three recipes: one for breakfast recipe, one for lunch recipe, and one for dinner recipe. "
-        f"Each recipe should include a name, a list of ingredients, and step-by-step instructions."
-        f"Each recipe should include nutritional information (calories, proteins, carbs, and fats)"
+        f"The user's mood is '{mood}', and they have the following ingredients available: {', '.join(ingredients)}. "
+        f"Their dietary goals include: {dietary_goals}. Based on their daily nutritional intake ({daily_intakes}), "
+        f"and their liked recipes or preferences ({data}), recommend three recipes: one for breakfast, one for lunch, and one for dinner. "
+        f"Each recipe should meet the user's dietary goals, utilize the ingredients provided, and align with their mood.\n\n"
+        "Let's think step by step:\n"
+        "1. Identify recipes that match the user's mood.\n"
+        "2. Ensure the recipes align with their dietary goals and avoid exceeding daily intake targets.\n"
+        "3. Use the provided ingredients wherever possible.\n"
+        "4. Provide a name, list of ingredients, step-by-step instructions, and nutritional information for each recipe."
+        "5. Each recipe should include nutritional information (calories, proteins, carbs, and fats)"
     )
+        
     try:
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "You are a helpful assistant skilled in recipe suggestions."},
+                {"role": "system", "content": "You are a helpful assistant skilled in creating recipe recommendations."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=700,
+            max_tokens=1000,
             temperature=0.7
         )
+
         return parse_recipe_recommendations(response['choices'][0]['message']['content'].strip())
     except Exception as e:
         logging.error(f"Error generating recipe recommendations: {e}")
         st.error("Unable to generate recipe recommendations. Please try again later.")
         return []
-
-
-def save_daily_intake(user_id, date, intake_data):
-    """Save daily nutritional intake to Firebase."""
-    try:
-        database.child("users").child(user_id).child("health_intake").child(date).set(intake_data)
-        st.success("Your daily intake has been saved!")
-    except Exception as e:
-        logging.error(f"Error saving daily intake: {e}")
-        st.error("Unable to save daily intake. Please try again later.")
-
-
-def fetch_daily_intake(user_id):
-    """
-    Fetches all saved daily intake data for a specific user.
-
-    :param user_id: The unique identifier of the user.
-    :return: A dictionary of daily intake data with dates as keys.
-    """
-    try:
-        intake_data = database.child("users").child(user_id).child("health_intake").get()
-
-        if intake_data.val() is not None:
-            return intake_data.val()
-        else:
-            return {}
-    except Exception as e:
-        logging.error(f"Error fetching daily intake data: {e}")
-        return {}
-
-
-def fetch_independent_data(user_id):
-    """Fetch independent data (name, gender, age, health_intake) from Firebase."""
-    try:
-        name = database.child("users").child(user_id).child("name").get().val()
-        gender = database.child("users").child(user_id).child("gender").get().val()
-        age = database.child("users").child(user_id).child("age").get().val()
-        weight = database.child("users").child(user_id).child("weight").get().val()
-        health_data = database.child("users").child(user_id).child("health_intake").get().val()
-
-        return {
-            "name": name or "User",
-            "gender": gender or "Unknown",
-            "age": age or "Unknown",
-            "weight": weight or "Unknown",
-            "health_data": health_data or {}
-        }
-    except Exception as e:
-        logging.error(f"Error fetching data: {e}")
-        st.error("Unable to fetch user data.")
-        return None
 
 
 def get_ideal_intake_from_openai(user_info):
@@ -206,10 +111,14 @@ def get_ideal_intake_from_openai(user_info):
 
 
     prompt = (
-        f"Provide the ideal daily nutrient intake (calories, proteins, carbs, and fats) for the user with the name {name}"        
-        f"Based on the user's age: {age}, gender: {gender}, and weight: {weight}."
-        f"Provide it as a list with no extra text or explanations"
-        f"Provide one value for each , i.e no ranges"
+        f"The user is named {name} with the following details: "
+        f"Age: {age}, Gender: {gender}, and Weight: {weight}. "
+        f"Let's think step by step: "
+        f"1. Determine the user's caloric needs based on their age, gender, and weight. "
+        f"2. Calculate the ideal intake of proteins, carbs, and fats, ensuring the total matches the caloric needs. "
+        f"3. Provide the final values for calories, proteins, carbs, and fats, in this format: "
+        f"{{'calories': <value>, 'proteins': <value>, 'carbs': <value>, 'fats': <value>}} "
+        f"Return only the dictionary with values and no explanations or extra text."
     )
 
     try:
@@ -219,34 +128,22 @@ def get_ideal_intake_from_openai(user_info):
             max_tokens=800,
             temperature=0.7
         )
+        logging.debug("Response from OpenAI: ", ideal_values_response)
+
         ideal_values_str = ideal_values_response['choices'][0]['message']['content'].strip()
-
-        ideal_intake = {}
-
-        for line in ideal_values_str.split('\n'):
-            if not line.strip():
-                continue
-                
-            nutrient, amount = line.split(":")
-            clean_nutrient = nutrient.strip().lstrip("-").lower()  
-            clean_amount = amount.strip().replace('g', '').strip()
-
-            clean_amount = clean_amount.replace(',', '')
-
-            try:
-                ideal_intake[clean_nutrient] = float(clean_amount)
-            except ValueError as e:
-                logging.error(f"Error converting amount '{clean_amount}' for nutrient '{clean_nutrient}': {e}")
-
-        ideal_intake = {key.strip(): value for key, value in ideal_intake.items()}
-
-        logging.debug(f"Ideal Intake: {ideal_intake}")
-        return ideal_intake
-
+        
+        try:
+            ideal_intake = ast.literal_eval(ideal_values_str)  
+            logging.debug(f"Ideal Intake: {ideal_intake}")
+        except Exception as e:
+            logging.error(f"Error parsing the response: {e}")
+            ideal_intake = {}
 
     except Exception as e:
-        print(f"Error fetching data from OpenAI: {e}")
-        return {}
+        logging.error(f"Error fetching data from OpenAI: {e}")
+        ideal_intake = {}
+
+    return ideal_intake
 
 
 def generate_health_report_with_openai_v2(user_info):
@@ -271,18 +168,24 @@ def generate_health_report_with_openai_v2(user_info):
     summary_prompt = (
         f"The user is a {age}-year-old {gender.lower()} named {name} and weighs {weight}. Based on their health data:\n"
         f"{health_summary}\n\n"
-        f"Generate a detailed health report for {name}, including a summary of their nutritional habits, areas of improvement, "
-        f"and personalized recommendations for a healthier diet and lifestyle. "
-        f"Provide specific suggestions for meals, exercises, and other health tips tailored to their age, gender, and weight."
+        f"Let's think step by step: "
+        f"1. Summarize the user's nutritional habits based on their health data. "
+        f"2. Identify areas where their habits deviate from a healthy lifestyle. "
+        f"3. Provide specific recommendations tailored to their age, gender, and weight. "
+        f"4. Include suggestions for meals, exercises, and lifestyle tips to help them improve. "
+        f"Finally, combine all the information into a detailed health report for {name}."
     )
 
     daily_prompt = (
         f"The user is a {age}-year-old {gender.lower()} named {name} and weighs {weight}. Based on their health data for today "
         f"({datetime.now().strftime('%Y-%m-%d')}):\n"
         f"{health_summary}\n\n"
-        f"Generate a daily report, including an analysis of their nutritional intake (calories, proteins, carbs, and fats) "
-        f"compared to ideal intake for their age, weight, and activity level. "
-        f"Explain areas where their intake deviates from the ideal and suggest improvements."
+        f"Let's think step by step: "
+        f"1. Analyze the user's daily nutritional intake (calories, proteins, carbs, and fats) based on their health data. "
+        f"2. Compare their intake to the ideal values for someone of their age, weight, and activity level. "
+        f"3. Identify areas where their intake deviates from the ideal values. "
+        f"4. Suggest specific improvements they can make to align with their dietary goals. "
+        f"Finally, generate a daily report summarizing these insights."
     )
 
     try:
@@ -345,6 +248,109 @@ def generate_health_report_with_openai_v2(user_info):
         return None, None, None
 
 
+# Helper Functions
+
+def fetch_user_preferences(user_uid):
+    try:
+        preferences = database.child("users").child(user_uid).child("preferences").get().val()
+        liked_ingredients = preferences.get("liked_ingredients", []) if preferences else []
+        disliked_ingredients = preferences.get("disliked_ingredients", []) if preferences else []
+        liked_recipes = preferences.get("liked_recipes", []) if preferences else []
+        return liked_ingredients, disliked_ingredients, liked_recipes
+    except Exception as e:
+        st.error(f"Failed to fetch user preferences: {e}")
+        return [], [], []
+
+
+def add_to_favorites(user_id, recipe_title):
+    try:
+        preferences = database.child("users").child(user_id).child("preferences").get().val() or {}
+        liked_recipes = preferences.get("liked_recipes", [])
+
+        if recipe_title not in liked_recipes:
+            liked_recipes.append(recipe_title)
+            database.child("users").child(user_id).child("preferences").update({"liked_recipes": liked_recipes})
+            st.success(f"Added '{recipe_title}' to favorites!")
+        else:
+            st.info(f"'{recipe_title}' is already in favorites.")
+    except Exception as e:
+        logging.error(f"Error adding to favorites: {e}")
+        st.error("Failed to add recipe to favorites.")
+
+
+def save_daily_intake(user_id, date, intake_data):
+    """Save daily nutritional intake to Firebase."""
+    try:
+        database.child("users").child(user_id).child("health_intake").child(date).set(intake_data)
+        st.success("Your daily intake has been saved!")
+    except Exception as e:
+        logging.error(f"Error saving daily intake: {e}")
+        st.error("Unable to save daily intake. Please try again later.")
+
+
+def fetch_daily_intake(user_id):
+    """
+    Fetches all saved daily intake data for a specific user.
+
+    :param user_id: The unique identifier of the user.
+    :return: A dictionary of daily intake data with dates as keys.
+    """
+    try:
+        intake_data = database.child("users").child(user_id).child("health_intake").get()
+
+        if intake_data.val() is not None:
+            return intake_data.val()
+        else:
+            return {}
+    except Exception as e:
+        logging.error(f"Error fetching daily intake data: {e}")
+        return {}
+
+
+def parse_recipe_recommendations(response):
+    """
+    Parse the response from OpenAI to extract recipe details, including ingredients, instructions, and nutritional information.
+    """
+
+    recipes = []
+    current_recipe = ""   
+    for line in response.split("\n"):
+        if "Recipe:" in line:
+            if current_recipe:
+                recipes.append(current_recipe.strip())
+            current_recipe = line.strip() + "\n" 
+        else:
+            current_recipe += line.strip() + "\n"  
+
+    if current_recipe:  
+        recipes.append(current_recipe.strip())
+
+    logging.debug(recipes)
+    return recipes
+
+
+def fetch_independent_data(user_id):
+    """Fetch independent data (name, gender, age, health_intake) from Firebase."""
+    try:
+        name = database.child("users").child(user_id).child("name").get().val()
+        gender = database.child("users").child(user_id).child("gender").get().val()
+        age = database.child("users").child(user_id).child("age").get().val()
+        weight = database.child("users").child(user_id).child("weight").get().val()
+        health_data = database.child("users").child(user_id).child("health_intake").get().val()
+
+        return {
+            "name": name or "User",
+            "gender": gender or "Unknown",
+            "age": age or "Unknown",
+            "weight": weight or "Unknown",
+            "health_data": health_data or {}
+        }
+    except Exception as e:
+        logging.error(f"Error fetching data: {e}")
+        st.error("Unable to fetch user data.")
+        return None
+
+
 def login_logic():
     """Handle login and signup logic."""
     if "logged_in" not in st.session_state:
@@ -392,7 +398,6 @@ def login_logic():
                 error.error(f"Error: {str(e)}")
    
 
-# Home page with hardcoded ingredients to like or dislike
 def home_page():
     st.header("Home Page")
 
